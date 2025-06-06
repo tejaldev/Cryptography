@@ -1,0 +1,120 @@
+from timeit import default_timer as timer
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes
+from os import urandom
+from Crypto.Hash import KMAC128
+from Crypto.Random import get_random_bytes
+
+# ====================== AES-GCM Implementation ======================
+def aes_gcm_encrypt(data, password):
+    salt = urandom(16)
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=None
+    )
+    key = kdf.derive(password.encode())
+    iv = urandom(12)
+    cipher = Cipher(algorithms.AES(key), modes.GCM(iv), backend=None)
+    encryptor = cipher.encryptor()
+    encrypted_data = encryptor.update(data.encode()) + encryptor.finalize()
+    return (salt, iv, encryptor.tag, encrypted_data)
+
+def aes_gcm_decrypt(encrypted_data, password, salt, iv, tag):
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+        backend=None
+    )
+    key = kdf.derive(password.encode())
+    cipher = Cipher(algorithms.AES(key), modes.GCM(iv, tag), backend=None)
+    decryptor = cipher.decryptor()
+    return decryptor.update(encrypted_data) + decryptor.finalize()
+
+# ====================== KMAC Implementation ======================
+def kmac_encrypt(plaintext, key, nonce, associated_data):
+    ciphertext = bytes([b ^ k for b, k in zip(plaintext, key[:len(plaintext)])])
+    kmac = KMAC128.new(key=key, custom=b"AEAD", mac_len=16)  # CHANGED: Specify length here
+    kmac.update(nonce + associated_data + ciphertext)
+    tag = kmac.digest()  # CHANGED: Removed length parameter
+    return ciphertext, tag
+
+def kmac_decrypt(ciphertext, tag, key, nonce, associated_data):
+    kmac = KMAC128.new(key=key, custom=b"AEAD", mac_len=16)  # CHANGED: Specify length here
+    kmac.update(nonce + associated_data + ciphertext)
+    computed_tag = kmac.digest()  # CHANGED: Removed length parameter
+    if computed_tag != tag:
+        raise ValueError("Authentication failed!")
+    plaintext = bytes([b ^ k for b, k in zip(ciphertext, key[:len(ciphertext)])])
+    return plaintext
+
+# ====================== Benchmarking ======================
+def benchmark(func, iterations=10):
+    times = []
+    for _ in range(iterations):
+        start = timer()
+        func()
+        times.append(timer() - start)
+    return sum(times) / iterations
+
+def run_tests():
+    # Test parameters
+    password = 'cpre381'
+    data = 'This is the second part for AEAD'
+    large_data = data * 2
+    large_password = password * 2
+
+    # KMAC-specific setup
+    key = get_random_bytes(32)
+    nonce = get_random_bytes(12)
+    associated_data = b"header"
+
+    print("=== Performance Comparison (10 runs) ===")
+   
+    # AES-GCM Baseline
+    def aes_wrapper():
+        salt, iv, tag, encrypted_data = aes_gcm_encrypt(data, password)
+        aes_gcm_decrypt(encrypted_data, password, salt, iv, tag)
+   
+    avg_aes = benchmark(aes_wrapper)
+    print(f"AES-GCM Avg Time: {avg_aes:.6f} s")
+
+    # KMAC Baseline
+    def kmac_wrapper():
+        ciphertext, tag = kmac_encrypt(data.encode(), key, nonce, associated_data)
+        kmac_decrypt(ciphertext, tag, key, nonce, associated_data)
+   
+    avg_kmac = benchmark(kmac_wrapper)
+    print(f"KMAC Avg Time: {avg_kmac:.6f} s")
+    print(f"→ AES-GCM is {avg_kmac/avg_aes:.1f}x faster\n")
+
+    # Doubled Plaintext Test
+    def aes_large_wrapper():
+        salt, iv, tag, encrypted_data = aes_gcm_encrypt(large_data, password)
+        aes_gcm_decrypt(encrypted_data, password, salt, iv, tag)
+   
+    avg_aes_large = benchmark(aes_large_wrapper)
+    print(f"AES-GCM (2x Plaintext): {avg_aes_large:.6f} s (+{(avg_aes_large/avg_aes - 1)*100:.1f}%)")
+
+    def kmac_large_wrapper():
+        ciphertext, tag = kmac_encrypt(large_data.encode(), key, nonce, associated_data)
+        kmac_decrypt(ciphertext, tag, key, nonce, associated_data)
+   
+    avg_kmac_large = benchmark(kmac_large_wrapper)
+    print(f"KMAC (2x Plaintext): {avg_kmac_large:.6f} s (+{(avg_kmac_large/avg_kmac - 1)*100:.1f}%)\n")
+
+    # Doubled Password Test (AES-GCM only)
+    def aes_large_pw_wrapper():
+        salt, iv, tag, encrypted_data = aes_gcm_encrypt(data, large_password)
+        aes_gcm_decrypt(encrypted_data, large_password, salt, iv, tag)
+   
+    avg_aes_large_pw = benchmark(aes_large_pw_wrapper)
+    print(f"AES-GCM (2x Password): {avg_aes_large_pw:.6f} s (+{(avg_aes_large_pw/avg_aes - 1)*100:.1f}%)")
+
+if __name__ == "__main__":
+    run_tests()

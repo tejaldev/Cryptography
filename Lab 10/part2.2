@@ -1,0 +1,41 @@
+from Crypto.Hash import KMAC128
+from Crypto.Random import get_random_bytes
+
+def encrypt(plaintext, key, nonce, associated_data):
+    # Generate ciphertext (XOR for simplicity here)
+    ciphertext = bytes([b ^ k for b, k in zip(plaintext, key[:len(plaintext)])])
+
+    # Create a MAC tag using KMAC (sponge-based AEAD)
+    kmac = KMAC128.new(key=key, custom=b"AEAD")
+    kmac.update(nonce + associated_data + ciphertext)
+    tag = kmac.digest(16)
+   
+    return ciphertext, tag
+
+def decrypt(ciphertext, tag, key, nonce, associated_data):
+    # Recompute tag
+    kmac = KMAC128.new(key=key, custom=b"AEAD")
+    kmac.update(nonce + associated_data + ciphertext)
+    computed_tag = kmac.digest(16)
+
+    if computed_tag != tag:
+        raise ValueError("Authentication failed!")
+
+    # Decrypt
+    plaintext = bytes([b ^ k for b, k in zip(ciphertext, key[:len(ciphertext)])])
+    return plaintext
+
+# Sample input
+key = get_random_bytes(32)
+nonce = get_random_bytes(12)
+associated_data = b"header"
+plaintext = b"This is the second part for AEAD"
+
+# Encrypt
+ciphertext, tag = encrypt(plaintext, key, nonce, associated_data)
+print("Ciphertext:", ciphertext)
+print("Tag:", tag)
+
+# Decrypt
+decrypted = decrypt(ciphertext, tag, key, nonce, associated_data)
+print("Decrypted:", decrypted.decode())
